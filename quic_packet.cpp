@@ -10,54 +10,69 @@
 #include <print>
 #include <netinet/in.h>
 
-std::vector<std::uint8_t> get_client_dst_conn(std::span<const std::uint8_t> quic) {
-    std::vector<std::uint8_t> dst_conn;
+QuicInitialHdr parse_packet(std::span<const std::uint8_t> quic) {
+    const auto init = quic;
 
-    quic = quic.subspan(1 + 4);
+    QuicInitialHdr ret;
 
-    const std::uint8_t dest_conn_len = quic.front();
-    dst_conn.resize(static_cast<std::uint8_t>(dest_conn_len));
-
-    quic = quic.subspan(sizeof(dest_conn_len));
-    std::memcpy(dst_conn.data(), quic.data(), dst_conn.size());
-
-    return dst_conn;
-}
-
-std::uint32_t get_packet_number(std::span<const std::uint8_t> quic) {
-    auto s = quic;
-
-    auto need = [&s](std::size_t n) {
-        if (s.size() < n) throw std::out_of_range("get_packet_number: truncated packet");
+    auto need = [&quic](std::size_t n) {
+        if (quic.size() < n) throw std::out_of_range("get_packet_number: truncated packet");
     };
     auto skip = [&](std::size_t n) {
         need(n);
-        s = s.subspan(n);
+        quic = quic.subspan(n);
     };
     auto varint = [&]() -> std::uint64_t {
         need(1);
-        const std::size_t len = std::size_t{1} << (s[0] >> 6);
+        const std::size_t len = std::size_t{1} << (quic[0] >> 6);
         need(len);
-        std::uint64_t v = s[0] & 0x3f;
-        for (std::size_t i = 1; i < len; ++i) v = (v << 8) | s[i];
-        s = s.subspan(len);
+        std::uint64_t v = quic[0] & 0x3f;
+        for (std::size_t i = 1; i < len; ++i) v = (v << 8) | quic[i];
+        quic = quic.subspan(len);
         return v;
     };
 
-    skip(1 + 4);                 // first byte + version
-    need(1); skip(1 + s[0]);     // DCID len + DCID
-    need(1); skip(1 + s[0]);     // SCID len + SCID
-    skip(varint());              // token length + token
-    varint();                    // Length
+    need(1);
+    ret.packet_number_len = (quic.front() & 0x03) + 1;
 
-    const std::size_t pn_length = (quic[0] & 0x03) + 1;
-    need(pn_length);
+    need(1 + 4);
+    skip(1 + 4);
 
-    std::uint32_t pn = 0;
-    for (std::size_t i = 0; i < pn_length; ++i) {
-        pn = (pn << 8) | s[i];
-    }
-    return pn;
+    need(1);
+    const std::uint8_t dest_conn_id_len = quic.front();
+    skip(1);
+
+    need(dest_conn_id_len);
+    ret.dest_conn_id.resize(dest_conn_id_len);
+    std::memcpy(ret.dest_conn_id.data(), quic.data(), dest_conn_id_len);
+    skip(dest_conn_id_len);
+
+    need(1);
+    const std::uint8_t src_conn_id_len = quic.front();
+    skip(1);
+
+    need(src_conn_id_len);
+    ret.src_conn_id.resize(src_conn_id_len);
+    std::memcpy(ret.src_conn_id.data(), quic.data(), src_conn_id_len);
+    skip(src_conn_id_len);
+
+    need(1);
+    const std::uint8_t token_len = quic.front();
+    assert(token_len == 0);
+    skip(1 + token_len);
+
+    ret.length = varint();
+
+    ret.packet_number_off = std::distance(init.data(), quic.data());
+
+    need(ret.packet_number_len);
+    ret.packet_number.resize(ret.packet_number_len);
+    std::memcpy(ret.packet_number.data(), quic.data(), ret.packet_number_len);
+    skip(ret.packet_number_len);
+
+    ret.payload_offset = std::distance(init.data(), quic.data());
+
+    return ret;
 }
 
 std::size_t get_pn_offset(std::span<const std::uint8_t> quic) {

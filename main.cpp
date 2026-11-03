@@ -62,6 +62,40 @@ std::vector<std::uint8_t> lift_header_prot(std::span<const std::uint8_t> packet)
     return quic;
 }
 
+std::vector<std::uint8_t> lift_packet_prot(std::span<const std::uint8_t> packet) {
+    std::vector<std::uint8_t> quic{packet.begin(), packet.end()};
+
+    const auto dest_conn = get_client_dst_conn(packet);
+    const auto init_secret = hkdf_extract(initial_salt, dest_conn);
+    const auto client_init_secret = hkdf_expand_label(init_secret, "client in", {}, 32);
+
+    const auto iv_secret = hkdf_expand_label(client_init_secret, "quic iv", {}, 12); // 12 because MIN nonce is 12 bytes in AES-GCM
+    const auto aes_key = hkdf_expand_label(client_init_secret, "quic key", {}, 16);
+
+    std::vector<std::uint8_t> nonce(iv_secret.size(), 0);
+    {
+        const std::uint64_t packet_num = get_packet_number(quic);
+        std::memcpy(nonce.data() + nonce.size() - sizeof(packet_num), &packet_num, sizeof(packet_num));
+        for (auto i = 0; i < nonce.size(); ++i) {
+            nonce[i] ^= iv_secret[i];
+        }
+    }
+
+    const std::uint8_t pn_length = (quic[0] & 0x03) + 1;
+    const auto after_pn_offset = get_pn_offset(quic) + pn_length;
+
+    std::span<const std::uint8_t> header{quic.begin(), quic.begin() + static_cast<std::ptrdiff_t>(after_pn_offset)};
+    std::span<const std::uint8_t> ciphertext{quic.begin() + static_cast<std::ptrdiff_t>(after_pn_offset), quic.end()};
+
+    const auto plaintext = aead(aes_key, nonce, header, ciphertext);
+    std::println("off: {}, size: {}", after_pn_offset, quic.size());
+    quic.erase(quic.begin() + static_cast<std::ptrdiff_t>(after_pn_offset), quic.end());
+    quic.insert(quic.end(), plaintext.begin(), plaintext.end());
+
+    return quic;
+}
+
+// aaabbccc
 
 bool try_long_header(std::span<const std::uint8_t> packet) {
     const std::uint8_t first_b = packet.front();
@@ -114,11 +148,12 @@ void parse_quic(std::span<const std::uint8_t> packet) {
             return;
         }
 
-        // Lift HEADER prot
-        const auto decrypted_packet = lift_header_prot(packet);
+        auto decrypted_packet = lift_header_prot(packet);
         print_long_header(decrypted_packet);
 
-        // Lift header protection
+        decrypted_packet = lift_packet_prot(decrypted_packet);
+
+        parse_payload(decrypted_packet);
     }
 }
 

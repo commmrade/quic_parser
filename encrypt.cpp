@@ -75,3 +75,28 @@ header_protection(std::span<const std::uint8_t> hp_key, std::span<const std::uin
 
     return {mask.data(), mask.data() + mask.size()};
 }
+
+std::vector<std::uint8_t> aead(std::span<const std::uint8_t> key, std::span<const std::uint8_t> nonce,
+                               std::span<const std::uint8_t> header, std::span<const std::uint8_t> ciphertext) {
+    constexpr std::size_t tag_len = 16;
+    if (ciphertext.size() < tag_len) {
+        throw std::runtime_error("AEAD: ciphertext shorter than tag");
+    }
+
+    const auto body = ciphertext.first(ciphertext.size() - tag_len);
+    const auto tag = ciphertext.last(tag_len);
+
+    std::vector<std::uint8_t> out(body.size());
+
+    CryptoPP::GCM<CryptoPP::AES>::Decryption dec;
+    dec.SetKeyWithIV(key.data(), key.size(), nonce.data(), nonce.size());
+
+    const bool ok = dec.DecryptAndVerify(out.data(), tag.data(), tag.size(),
+                                         nonce.data(), static_cast<int>(nonce.size()),
+                                         header.data(), header.size(),
+                                         body.data(), body.size());
+    if (!ok) {
+        throw std::runtime_error("AEAD decryption failed");
+    }
+    return out;
+}

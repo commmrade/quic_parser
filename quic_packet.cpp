@@ -3,8 +3,12 @@
 //
 
 #include "quic_packet.hpp"
+
+#include <bitset>
+#include <cassert>
 #include <cstring>
 #include <print>
+#include <netinet/in.h>
 
 std::vector<std::uint8_t> get_client_dst_conn(std::span<const std::uint8_t> quic) {
     std::vector<std::uint8_t> dst_conn;
@@ -18,6 +22,71 @@ std::vector<std::uint8_t> get_client_dst_conn(std::span<const std::uint8_t> quic
     std::memcpy(dst_conn.data(), quic.data(), dst_conn.size());
 
     return dst_conn;
+}
+
+std::uint32_t get_packet_number(std::span<const std::uint8_t> quic) {
+    auto s = quic;
+
+    auto need = [&s](std::size_t n) {
+        if (s.size() < n) throw std::out_of_range("get_packet_number: truncated packet");
+    };
+    auto skip = [&](std::size_t n) {
+        need(n);
+        s = s.subspan(n);
+    };
+    auto varint = [&]() -> std::uint64_t {
+        need(1);
+        const std::size_t len = std::size_t{1} << (s[0] >> 6);
+        need(len);
+        std::uint64_t v = s[0] & 0x3f;
+        for (std::size_t i = 1; i < len; ++i) v = (v << 8) | s[i];
+        s = s.subspan(len);
+        return v;
+    };
+
+    skip(1 + 4);                 // first byte + version
+    need(1); skip(1 + s[0]);     // DCID len + DCID
+    need(1); skip(1 + s[0]);     // SCID len + SCID
+    skip(varint());              // token length + token
+    varint();                    // Length
+
+    const std::size_t pn_length = (quic[0] & 0x03) + 1;
+    need(pn_length);
+
+    std::uint32_t pn = 0;
+    for (std::size_t i = 0; i < pn_length; ++i) {
+        pn = (pn << 8) | s[i];
+    }
+    return pn;
+}
+
+std::size_t get_pn_offset(std::span<const std::uint8_t> quic) {
+    std::span<const std::uint8_t> span{quic};
+    span = span.subspan(1 + 4);
+
+    const std::uint8_t dest_id_len = span.front();
+    span = span.subspan(dest_id_len + sizeof(dest_id_len));
+
+    const std::uint8_t conn_id_len = span.front();
+    span = span.subspan(conn_id_len + sizeof(conn_id_len));
+
+    const std::uint8_t token_len = span.front();
+    assert(token_len == 0);
+    span = span.subspan(token_len + sizeof(token_len));
+
+    const std::uint8_t len_byte = span.front();
+    const auto len_len = 1 << (len_byte >> 6);
+
+    span = span.subspan(len_len);
+
+    return std::distance(quic.data(), span.data());
+}
+
+std::size_t get_payload_offset(std::span<const std::uint8_t> quic) {
+    const std::uint8_t pn_length = (quic[0] & 0x03) + 1;
+    const auto pn_offset = get_pn_offset(quic);
+
+    return pn_offset + pn_length;
 }
 
 namespace {
@@ -107,4 +176,23 @@ void print_long_header(std::span<const std::uint8_t> packet) {
     auto pn = take(pn_len);
     if (!pn) { std::println("truncated: packet number"); return; }
     print_hex("packet number", *pn);
+}
+
+
+void parse_payload(std::span<const std::uint8_t> packet) {
+    const auto pl_off = get_payload_offset(packet);
+
+    std::span<const std::uint8_t> payload = packet.subspan(pl_off);
+
+    const auto frame_type = payload.front();
+    if (frame_type == 0x06) {
+        std::println("crypto frame");
+        payload = payload.subspan(1);
+
+        const auto offset = read_varint(payload).value();
+        std::println("off: {}", offset);
+
+        const auto len = read_varint(payload).value();
+        std::println("len: {}", len);
+    }
 }

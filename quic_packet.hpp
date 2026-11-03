@@ -15,7 +15,11 @@ inline constexpr unsigned char quic_bytes_2[] = {0x45, 0x0, 0x4, 0xcc, 0xd5, 0x8
 inline const std::span<const std::uint8_t> quic_packet_2{quic_bytes_2, sizeof(quic_bytes_2)};
 
 std::vector<std::uint8_t> get_client_dst_conn(std::span<const std::uint8_t> quic);
+std::uint32_t get_packet_number(std::span<const std::uint8_t> quic);
+std::size_t get_pn_offset(std::span<const std::uint8_t> quic);
+std::size_t get_payload_offset(std::span<const std::uint8_t> quic);
 
 void print_long_header(std::span<const std::uint8_t> packet);
+void parse_payload(std::span<const std::uint8_t> packet);
 
 #endif //QUIC_PARSING_QUIC_PACKET_HPP

@@ -22,4 +22,6 @@ std::vector<std::uint8_t> hkdf_expand_label(std::span <const std::uint8_t> secre
 
 std::vector<std::uint8_t> header_protection(std::span<const std::uint8_t> hp_key, std::span<const std::uint8_t> sample);
 
+std::vector<std::uint8_t> aead(std::span<const std::uint8_t> key, std::span<const std::uint8_t> nonce, std::span<const std::uint8_t> header, std::span<const std::uint8_t> ciphertext);
+
 #endif //QUIC_PARSING_ENCRYPT_HPP
